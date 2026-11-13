@@ -93,16 +93,31 @@ class XLSFormat:
         return stream.getvalue()
 
     @classmethod
-    def read_cell(cls, value, type_, datemode):
-        """Returns the Python value of a cell, based on its xlrd type."""
+    def read_cell(cls, value, type_, datemode, recover_types=True):
+        """Returns the Python value of a cell, based on its xlrd type.
+
+        When ``recover_types`` is True, numeric cells holding an integral
+        value are returned as ``int`` rather than the ``float`` xlrd always
+        produces for numbers. Values with a fractional part stay ``float``.
+        Date, text, boolean and error cells are unaffected. Set
+        ``recover_types`` to False to preserve the raw xlrd values.
+        """
         if type_ == xlrd.XL_CELL_ERROR:
             return xlrd.error_text_from_code[value]
         elif type_ == xlrd.XL_CELL_DATE:
             return xldate_as_datetime(value, datemode)
+        elif (
+            recover_types
+            and type_ == xlrd.XL_CELL_NUMBER
+            and type(value) is float
+            and value.is_integer()
+        ):
+            return int(value)
         return value
 
     @classmethod
-    def import_sheet(cls, dset, sheet, datemode, headers=True, skip_lines=0):
+    def import_sheet(cls, dset, sheet, datemode, headers=True, skip_lines=0,
+                     recover_types=True):
         """Populates dataset with sheet."""
 
         dset.title = sheet.name
@@ -114,24 +129,36 @@ class XLSFormat:
                 dset.headers = sheet.row_values(i)
             else:
                 dset.append([
-                    cls.read_cell(val, typ, datemode)
+                    cls.read_cell(val, typ, datemode, recover_types=recover_types)
                     for val, typ in zip(sheet.row_values(i), sheet.row_types(i))
                 ])
 
     @classmethod
-    def import_set(cls, dset, in_stream, headers=True, skip_lines=0):
-        """Returns databook from XLS stream."""
+    def import_set(cls, dset, in_stream, headers=True, skip_lines=0,
+                   recover_types=True):
+        """Returns databook from XLS stream.
+
+        When ``recover_types`` is True (the default), integral numeric cells
+        are imported as ``int`` and fractional numbers as ``float``. Set it
+        to False to keep the raw ``float`` values produced by xlrd.
+        """
 
         dset.wipe()
 
         xls_book = xlrd.open_workbook(file_contents=in_stream.read())
         sheet = xls_book.sheet_by_index(0)
 
-        cls.import_sheet(dset, sheet, xls_book.datemode, headers, skip_lines)
+        cls.import_sheet(
+            dset, sheet, xls_book.datemode, headers, skip_lines,
+            recover_types=recover_types,
+        )
 
     @classmethod
-    def import_book(cls, dbook, in_stream, headers=True):
-        """Returns databook from XLS stream."""
+    def import_book(cls, dbook, in_stream, headers=True, recover_types=True):
+        """Returns databook from XLS stream.
+
+        See :meth:`import_set` for the meaning of ``recover_types``.
+        """
 
         dbook.wipe()
 
@@ -139,7 +166,10 @@ class XLSFormat:
 
         for sheet in xls_book.sheets():
             dset = tablib.Dataset()
-            cls.import_sheet(dset, sheet, xls_book.datemode, headers)
+            cls.import_sheet(
+                dset, sheet, xls_book.datemode, headers,
+                recover_types=recover_types,
+            )
             dbook.add_sheet(dset)
 
     @classmethod

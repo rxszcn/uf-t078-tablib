@@ -1450,6 +1450,71 @@ class XLSTests(BaseTestCase):
         self.assertEqual('h:mm:ss', get_format_str(row[1]))
         self.assertEqual('m/d/yy h:mm', get_format_str(row[2]))
 
+    def test_xls_import_recovers_integer_types(self):
+        """Integral numeric cells come back as int, fractions stay float."""
+        data.append(('text', 42, 21.55, 10 ** 15, 0, -7))
+        data.headers = ('label', 'integer', 'fraction', 'big_int',
+                        'zero', 'negative')
+        reloaded = tablib.Dataset().load(data.xls, 'xls')
+        row = reloaded[0]
+
+        self.assertEqual(row, ('text', 42, 21.55, 10 ** 15, 0, -7))
+        self.assertIsInstance(row[1], int)
+        self.assertIsInstance(row[2], float)
+        self.assertIsInstance(row[3], int)
+        self.assertIsInstance(row[4], int)
+        self.assertIsInstance(row[5], int)
+
+    def test_xls_import_recover_types_disabled(self):
+        """recover_types=False keeps the raw float values from xlrd."""
+        data.append((42, 21.55))
+        data.headers = ('integer', 'fraction')
+        reloaded = tablib.Dataset().load(
+            data.xls, 'xls', recover_types=False
+        )
+        row = reloaded[0]
+
+        self.assertEqual(row, (42.0, 21.55))
+        self.assertIsInstance(row[0], float)
+        self.assertIsInstance(row[1], float)
+
+    def test_xls_book_import_recovers_integer_types(self):
+        """Type recovery applies to databook imports as well."""
+        data.append((42, 21.55))
+        data.headers = ('integer', 'fraction')
+        _book = tablib.Databook()
+        _book.add_sheet(data)
+
+        reloaded = tablib.Databook().load(_book.export('xls'), 'xls')
+        row = reloaded.sheets()[0][0]
+        self.assertEqual(row, (42, 21.55))
+        self.assertIsInstance(row[0], int)
+        self.assertIsInstance(row[1], float)
+
+        raw = tablib.Databook().load(
+            _book.export('xls'), 'xls', recover_types=False
+        )
+        raw_row = raw.sheets()[0][0]
+        self.assertEqual(raw_row, (42.0, 21.55))
+        self.assertIsInstance(raw_row[0], float)
+
+    def test_xls_import_type_recovery_keeps_text_and_dates(self):
+        """Text and date cells keep their existing parsing behaviour."""
+        xls_source = Path(__file__).parent / 'files' / 'dates.xls'
+        with xls_source.open('rb') as fh:
+            dset = tablib.Dataset().load(fh, 'xls')
+        self.assertEqual(
+            dset.dict[0]['birth_date'], dt.datetime(2015, 4, 12, 0, 0)
+        )
+
+        data.append(('004', 42))
+        data.headers = ('text_with_leading_zero', 'integer')
+        reloaded = tablib.Dataset().load(data.xls, 'xls')
+        row = reloaded[0]
+        self.assertEqual(row, ('004', 42))
+        self.assertIsInstance(row[0], str)
+        self.assertIsInstance(row[1], int)
+
     def test_xls_bad_chars_sheet_name(self):
         """
         Sheet names are limited to 30 chars and the following chars
@@ -1708,6 +1773,96 @@ class XLSXTests(BaseTestCase):
         """Raise ValueError if column_width is not a valid input for a databook"""
         with self.assertRaises(ValueError):
             self._book_helper_export_column_width("invalid input")
+
+
+class RoundTripTypeTests(BaseTestCase):
+    """Compare cell types after an export/import round trip of the same
+    data through the old XLS, the new XLSX and CSV formats."""
+
+    def _typed_dataset(self):
+        dset = tablib.Dataset(
+            headers=('text', 'integer', 'fraction', 'big_int', 'date/time')
+        )
+        dset.append((
+            'string', 42, 21.55, 10 ** 15,
+            dt.datetime(2019, 10, 4, 12, 30, 8),
+        ))
+        dset.append(('004', -7, 0.0, 0, dt.date(2019, 10, 4)))
+        return dset
+
+    def test_xls_and_xlsx_round_trip_types_match(self):
+        """Both Excel formats must agree on int/float/text/date types."""
+        dset = self._typed_dataset()
+
+        xls_data = tablib.Dataset().load(dset.export('xls'), 'xls')
+        xlsx_data = tablib.Dataset().load(dset.export('xlsx'), 'xlsx')
+
+        self.assertEqual(xls_data.dict, xlsx_data.dict)
+        for xls_row, xlsx_row in zip(xls_data, xlsx_data):
+            for xls_cell, xlsx_cell in zip(xls_row, xlsx_row):
+                self.assertEqual(
+                    type(xls_cell), type(xlsx_cell),
+                    f'{xls_cell!r} vs {xlsx_cell!r}',
+                )
+                self.assertEqual(xls_cell, xlsx_cell)
+
+        # Spot-check the exact types driving the downstream type dispatch.
+        first_row = xls_data[0]
+        self.assertIsInstance(first_row[0], str)
+        self.assertIsInstance(first_row[1], int)
+        self.assertIsInstance(first_row[2], float)
+        self.assertIsInstance(first_row[3], int)
+        self.assertIsInstance(first_row[4], dt.datetime)
+
+    def test_csv_round_trip_stays_textual(self):
+        """CSV is text based and must keep its current string behaviour."""
+        dset = self._typed_dataset()
+        csv_data = tablib.Dataset().load(dset.export('csv'), 'csv')
+
+        for row in csv_data:
+            for cell in row:
+                self.assertIsInstance(cell, str)
+        self.assertEqual(
+            csv_data[0],
+            ('string', '42', '21.55', str(10 ** 15),
+             '2019-10-04 12:30:08'),
+        )
+
+    def test_three_formats_round_trip_value_consistency(self):
+        """Values survive each format's round trip with the same semantics."""
+        dset = self._typed_dataset()
+
+        xls_data = tablib.Dataset().load(dset.export('xls'), 'xls')
+        xlsx_data = tablib.Dataset().load(dset.export('xlsx'), 'xlsx')
+        csv_data = tablib.Dataset().load(dset.export('csv'), 'csv')
+
+        # Text stays text everywhere; numeric values compare equal once the
+        # textual CSV cells are parsed back to numbers.
+        text_col = 0
+        numeric_cols = (1, 2, 3)
+        for row_idx in range(dset.height):
+            self.assertEqual(
+                xls_data[row_idx][text_col], csv_data[row_idx][text_col]
+            )
+            for col_idx in numeric_cols:
+                xls_value = xls_data[row_idx][col_idx]
+                xlsx_value = xlsx_data[row_idx][col_idx]
+                csv_value = float(csv_data[row_idx][col_idx])
+                self.assertEqual(xls_value, csv_value)
+                self.assertEqual(xlsx_value, csv_value)
+
+    def test_xls_raw_reading_remains_available(self):
+        """The opt-out switch restores the pre-fix float-only reading."""
+        dset = self._typed_dataset()
+
+        default_data = tablib.Dataset().load(dset.export('xls'), 'xls')
+        raw_data = tablib.Dataset().load(
+            dset.export('xls'), 'xls', recover_types=False
+        )
+
+        self.assertIsInstance(default_data[0][1], int)
+        self.assertIsInstance(raw_data[0][1], float)
+        self.assertEqual(default_data[0][1], raw_data[0][1])
 
 
 class JSONTests(BaseTestCase):

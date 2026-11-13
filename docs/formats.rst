@@ -213,9 +213,22 @@ Its ``import_set()`` method also supports a ``skip_lines`` parameter that you
 can set to a number of lines that should be skipped before starting to read
 data.
 
+Numeric cells are imported with their type preserved: a cell holding an
+integral value is returned as ``int``, while a value with a fractional part
+stays ``float``. This matches the behaviour of the xlsx_ format. Text and
+date cells are unaffected. Pass ``recover_types=False`` to ``import_set()``
+or ``import_book()`` to keep the raw ``float`` values produced by the
+underlying ``xlrd`` reader.
+
 .. versionchanged:: 3.1.0
 
     The ``skip_lines`` parameter for ``import_set()`` was added.
+
+.. versionchanged:: 3.10.0
+
+    Integral numeric cells are now imported as ``int`` instead of ``float``.
+    The ``recover_types`` parameter was added to restore the previous
+    behaviour.
 
 .. note::
 
